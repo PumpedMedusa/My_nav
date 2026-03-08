@@ -1,0 +1,862 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover"/>
+<meta name="theme-color" content="#0d0d0d"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="EspNav"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="description" content="ESP32 BLE Navigator — turn-by-turn directions on your OLED"/>
+
+<!-- PWA manifest -->
+<link rel="manifest" href="manifest.json"/>
+
+<!-- Icons -->
+<link rel="apple-touch-icon" href="icon-192.png"/>
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png"/>
+
+<title>EspNav</title>
+
+<!-- Leaflet -->
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<!-- Fonts -->
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+
+<style>
+* { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+
+:root {
+  --black:  #0d0d0d;
+  --dark:   #1a1a1a;
+  --card:   #242424;
+  --border: #333;
+  --text:   #f0f0f0;
+  --sub:    #888;
+  --green:  #00c566;
+  --blue:   #2196f3;
+  --orange: #ff6b35;
+  --red:    #ff3b3b;
+  --sh:     0 8px 40px rgba(0,0,0,0.55);
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bot: env(safe-area-inset-bottom, 0px);
+}
+
+html, body { height:100%; overflow:hidden; font-family:'DM Sans',sans-serif; background:var(--black); color:var(--text); }
+
+/* ══════════════════════════════════════
+   PERMISSION SPLASH SCREEN
+══════════════════════════════════════ */
+#permScreen {
+  position:fixed; inset:0; z-index:9000;
+  background:var(--black);
+  display:flex; flex-direction:column;
+  align-items:center; justify-content:center;
+  padding:32px 28px;
+  text-align:center;
+}
+#permScreen .logo-big {
+  width:80px; height:80px;
+  border:2px solid var(--green);
+  border-radius:50%;
+  display:flex; align-items:center; justify-content:center;
+  font-size:36px; margin-bottom:24px;
+  box-shadow:0 0 40px rgba(0,197,102,0.2);
+}
+#permScreen h1 { font-size:28px; font-weight:700; letter-spacing:2px; color:var(--green); margin-bottom:6px; }
+#permScreen p.sub { font-size:13px; color:var(--sub); margin-bottom:36px; font-family:'DM Mono'; }
+
+.perm-list { width:100%; margin-bottom:32px; }
+.perm-item {
+  display:flex; align-items:center; gap:14px;
+  padding:14px 16px; background:var(--card);
+  border:1px solid var(--border); border-radius:14px;
+  margin-bottom:10px; text-align:left;
+  transition:border-color 0.3s;
+}
+.perm-item.granted { border-color:var(--green); }
+.perm-item.denied  { border-color:var(--red); }
+.perm-icon { font-size:24px; flex-shrink:0; width:36px; text-align:center; }
+.perm-text h4 { font-size:14px; font-weight:600; }
+.perm-text p  { font-size:12px; color:var(--sub); margin-top:2px; }
+.perm-badge {
+  margin-left:auto; font-size:10px; font-family:'DM Mono';
+  padding:3px 8px; border-radius:20px; flex-shrink:0;
+}
+.perm-badge.waiting  { background:rgba(136,136,136,0.2); color:var(--sub); }
+.perm-badge.granted  { background:rgba(0,197,102,0.2);   color:var(--green); }
+.perm-badge.denied   { background:rgba(255,59,59,0.2);   color:var(--red); }
+
+#startBtn {
+  width:100%; padding:16px;
+  background:var(--green); border:none; border-radius:16px;
+  color:var(--black); font-family:'DM Sans'; font-size:16px; font-weight:700;
+  cursor:pointer; letter-spacing:0.5px; transition:all 0.18s;
+  opacity:0.4; pointer-events:none;
+}
+#startBtn.ready { opacity:1; pointer-events:auto; }
+#startBtn:active { transform:scale(0.98); }
+.perm-note { font-size:11px; color:var(--sub); margin-top:14px; line-height:1.6; }
+
+/* ══════════════════════════════════════
+   MAIN APP (hidden until perms granted)
+══════════════════════════════════════ */
+#app { display:none; height:100%; }
+
+#map { position:fixed; inset:0; z-index:0; background:#1a1a2e; }
+
+/* Dark tile filter */
+.leaflet-tile { filter:brightness(0.85) saturate(0.7) hue-rotate(180deg) invert(1); }
+.leaflet-tile-container { filter:invert(1) hue-rotate(180deg) saturate(1.3) brightness(0.9); }
+
+/* TOP BAR */
+#topBar {
+  position:fixed; top:0; left:0; right:0; z-index:100;
+  padding:calc(var(--safe-top) + 10px) 14px 0;
+  pointer-events:none;
+}
+#topBar > * { pointer-events:auto; }
+
+.app-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+.app-title {
+  background:var(--black); border-radius:24px; padding:7px 16px;
+  display:flex; align-items:center; gap:8px;
+  box-shadow:var(--sh); border:1px solid var(--border);
+}
+.app-title span  { font-size:15px; font-weight:600; letter-spacing:1px; }
+.app-title small { font-size:10px; color:var(--sub); font-family:'DM Mono'; }
+
+.ble-pill {
+  background:var(--black); border:1px solid var(--border);
+  border-radius:24px; padding:7px 14px;
+  display:flex; align-items:center; gap:7px;
+  box-shadow:var(--sh); cursor:pointer; transition:border-color 0.3s;
+}
+.ble-pill.on { border-color:var(--green); }
+.ble-dot { width:8px; height:8px; border-radius:50%; background:var(--red); transition:all 0.3s; }
+.ble-dot.on { background:var(--green); box-shadow:0 0 6px var(--green); }
+.ble-pill span { font-size:11px; font-family:'DM Mono'; color:var(--sub); }
+.ble-pill.on span { color:var(--green); }
+
+/* Search panel */
+#searchPanel {
+  background:var(--black); border:1px solid var(--border);
+  border-radius:18px; padding:12px; box-shadow:var(--sh); transition:all 0.3s;
+}
+.search-row {
+  display:flex; align-items:center; gap:10px;
+  padding:8px 10px; background:var(--card);
+  border-radius:12px; margin-bottom:8px;
+}
+.search-row:last-child { margin-bottom:0; }
+.dot-origin { width:11px; height:11px; border-radius:50%; background:var(--blue); flex-shrink:0; }
+.dot-dest   { width:11px; height:11px; border-radius:3px;  background:var(--orange); flex-shrink:0; }
+.search-row input {
+  flex:1; background:transparent; border:none; outline:none;
+  color:var(--text); font-family:'DM Sans'; font-size:14px; min-width:0;
+}
+.search-row input::placeholder { color:var(--sub); }
+
+.pin-btn {
+  background:rgba(33,150,243,0.15); border:1px solid rgba(33,150,243,0.3);
+  border-radius:8px; padding:4px 8px; font-size:11px; color:var(--blue);
+  cursor:pointer; white-space:nowrap; font-family:'DM Mono'; transition:all 0.15s;
+}
+.pin-btn.active { background:var(--blue); color:white; border-color:var(--blue); }
+.pin-btn.dest-pin { background:rgba(255,107,53,0.15); border-color:rgba(255,107,53,0.3); color:var(--orange); }
+.pin-btn.dest-pin.active { background:var(--orange); color:white; border-color:var(--orange); }
+
+.gps-icon {
+  width:30px; height:30px; background:rgba(0,197,102,0.15);
+  border:1px solid rgba(0,197,102,0.3); border-radius:8px;
+  display:flex; align-items:center; justify-content:center;
+  cursor:pointer; font-size:15px; flex-shrink:0; transition:all 0.15s;
+}
+
+/* Autocomplete */
+.auto-wrap { position:relative; }
+.auto-drop {
+  display:none; position:absolute; top:calc(100% + 6px); left:0; right:0;
+  background:var(--card); border:1px solid var(--border); border-radius:14px;
+  max-height:200px; overflow-y:auto; z-index:9999; box-shadow:var(--sh);
+}
+.auto-item { padding:10px 14px; cursor:pointer; border-bottom:1px solid var(--border); transition:background 0.12s; }
+.auto-item:last-child { border-bottom:none; }
+.auto-item:hover, .auto-item:active { background:rgba(255,255,255,0.06); }
+.auto-name { font-size:13px; font-weight:500; }
+.auto-addr { font-size:11px; color:var(--sub); margin-top:2px; }
+
+/* Go button */
+#goBtn {
+  width:100%; padding:13px; background:var(--green); border:none; border-radius:13px;
+  color:var(--black); font-family:'DM Sans'; font-size:15px; font-weight:700;
+  cursor:pointer; margin-top:10px; transition:all 0.18s; display:none; letter-spacing:0.5px;
+}
+#goBtn:active { transform:scale(0.98); }
+#goBtn:disabled { background:#444; color:#888; cursor:not-allowed; }
+
+/* Center pin */
+#centerPin {
+  position:fixed; left:50%; top:50%;
+  transform:translate(-50%, -100%);
+  z-index:200; pointer-events:none; display:none;
+  filter:drop-shadow(0 4px 12px rgba(0,0,0,0.5));
+  transition:transform 0.15s;
+}
+#centerPin.origin { color:var(--blue); }
+#centerPin.dest   { color:var(--orange); }
+#centerPin svg    { width:38px; height:38px; }
+#centerPin.dragging { transform:translate(-50%, -112%); }
+
+/* Recenter */
+#recenterBtn {
+  position:fixed; right:14px; bottom:220px; z-index:100;
+  width:42px; height:42px; background:var(--black);
+  border:1px solid var(--border); border-radius:12px;
+  display:flex; align-items:center; justify-content:center;
+  font-size:20px; cursor:pointer; box-shadow:var(--sh); transition:all 0.15s;
+}
+
+/* Route banner */
+#routeBanner {
+  display:none; position:fixed; bottom:0; left:0; right:0; z-index:100;
+  pointer-events:none; padding:0 14px calc(var(--safe-bot) + 14px);
+}
+#routeBanner > * { pointer-events:auto; }
+.route-card { background:var(--black); border:1px solid var(--border); border-radius:20px; padding:16px; box-shadow:var(--sh); }
+.route-summary { display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; }
+.route-summary h3   { font-size:18px; font-weight:600; }
+.route-summary span { font-size:13px; color:var(--sub); }
+.cur-step { display:flex; align-items:center; gap:14px; background:var(--card); border-radius:14px; padding:12px 14px; margin-bottom:10px; }
+.step-arrow-big { font-size:36px; line-height:1; flex-shrink:0; }
+.step-info h4 { font-size:14px; font-weight:600; line-height:1.3; }
+.step-info p  { font-size:12px; color:var(--sub); font-family:'DM Mono'; margin-top:3px; }
+.ble-sent { font-size:10px; color:var(--green); font-family:'DM Mono'; margin-top:3px; display:none; }
+.step-nav { display:flex; gap:8px; }
+.snav-btn {
+  flex:1; padding:10px; border-radius:11px; border:1px solid var(--border);
+  background:var(--card); color:var(--text); font-family:'DM Sans';
+  font-size:13px; font-weight:600; cursor:pointer; transition:all 0.15s;
+}
+.snav-btn.green { background:var(--green); border-color:var(--green); color:var(--black); }
+#stepsToggle {
+  width:100%; padding:9px; background:transparent; border:1px solid var(--border);
+  border-radius:11px; color:var(--sub); font-family:'DM Sans'; font-size:13px;
+  cursor:pointer; margin-top:8px; transition:all 0.15s;
+}
+
+/* Step list */
+#stepListPanel {
+  display:none; position:fixed; bottom:0; left:0; right:0; z-index:99;
+  background:var(--black); border-top:1px solid var(--border);
+  border-radius:20px 20px 0 0; max-height:55vh; overflow-y:auto;
+  padding:6px 14px calc(var(--safe-bot) + 20px); box-shadow:0 -8px 40px rgba(0,0,0,0.6);
+}
+.drag-handle { width:36px; height:4px; background:var(--border); border-radius:2px; margin:10px auto 14px; }
+.sl-item { display:flex; align-items:center; gap:12px; padding:10px 0; border-bottom:1px solid var(--border); cursor:pointer; }
+.sl-item:last-child { border-bottom:none; }
+.sl-item.active .sl-inst { color:var(--orange); }
+.sl-num  { font-family:'DM Mono'; font-size:11px; color:var(--sub); min-width:22px; }
+.sl-icon { font-size:20px; min-width:26px; text-align:center; }
+.sl-inst { font-size:13px; font-weight:500; line-height:1.3; flex:1; }
+.sl-dist { font-family:'DM Mono'; font-size:11px; color:var(--sub); }
+
+/* Toast */
+#toast {
+  position:fixed; bottom:120px; left:50%; transform:translateX(-50%);
+  background:rgba(10,10,10,0.92); color:white; padding:10px 20px;
+  border-radius:30px; font-size:13px; z-index:800;
+  opacity:0; transition:opacity 0.3s; pointer-events:none;
+  border:1px solid var(--border); font-family:'DM Mono';
+  max-width:88vw; text-align:center;
+}
+#toast.show { opacity:1; }
+
+/* Spinner */
+@keyframes spin { to { transform:rotate(360deg); } }
+.sp { display:inline-block; width:13px; height:13px; border:2px solid #333; border-top-color:var(--green); border-radius:50%; animation:spin 0.7s linear infinite; vertical-align:middle; margin-right:4px; flex-shrink:0; }
+
+@keyframes pulse { 0%,100%{box-shadow:0 0 0 0 rgba(0,197,102,0.4)} 50%{box-shadow:0 0 0 10px rgba(0,197,102,0)} }
+.arrived .route-card { animation:pulse 1.5s ease infinite; border-color:var(--green); }
+</style>
+</head>
+<body>
+
+<!-- ══════════════════════════════════════
+     PERMISSION SCREEN
+══════════════════════════════════════ -->
+<div id="permScreen">
+  <div class="logo-big">📍</div>
+  <h1>ESPNAV</h1>
+  <p class="sub">ESP32 · BLE · ORS · OpenStreetMap</p>
+
+  <div class="perm-list">
+    <div class="perm-item" id="permGps">
+      <div class="perm-icon">🛰️</div>
+      <div class="perm-text">
+        <h4>Location Access</h4>
+        <p>Required to show your position on the map and auto-advance steps</p>
+      </div>
+      <div class="perm-badge waiting" id="gpsBadge">Waiting</div>
+    </div>
+    <div class="perm-item" id="permBle">
+      <div class="perm-icon">📡</div>
+      <div class="perm-text">
+        <h4>Bluetooth</h4>
+        <p>To send turn-by-turn directions to your ESP32 OLED device</p>
+      </div>
+      <div class="perm-badge waiting" id="bleBadge">Optional</div>
+    </div>
+    <div class="perm-item" id="permNet">
+      <div class="perm-icon">🌐</div>
+      <div class="perm-text">
+        <h4>Internet</h4>
+        <p>For maps, address search and route calculation via OpenRouteService</p>
+      </div>
+      <div class="perm-badge waiting" id="netBadge">Checking</div>
+    </div>
+  </div>
+
+  <button id="startBtn" onclick="requestPerms()">Allow & Continue</button>
+  <p class="perm-note">Location permission is required to use the navigator.<br/>Bluetooth is optional — skip if not using ESP32.</p>
+</div>
+
+<!-- ══════════════════════════════════════
+     MAIN APP
+══════════════════════════════════════ -->
+<div id="app">
+
+  <div id="map"></div>
+
+  <!-- Center pin for map-drop -->
+  <div id="centerPin" class="origin">
+    <svg viewBox="0 0 24 24" fill="currentColor">
+      <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/>
+    </svg>
+  </div>
+
+  <!-- Top UI -->
+  <div id="topBar">
+    <div class="app-header">
+      <div class="app-title"><span>ESPNAV</span><small>ORS · BLE</small></div>
+      <div class="ble-pill" id="blePill" onclick="connectBLE()">
+        <div class="ble-dot" id="bleDot"></div>
+        <span id="bleLabel">Connect BLE</span>
+      </div>
+    </div>
+
+    <div id="searchPanel">
+      <div class="auto-wrap" id="wrapOrigin">
+        <div class="search-row">
+          <div class="dot-origin"></div>
+          <input id="iOrigin" type="text" placeholder="Your location"
+            autocomplete="off" spellcheck="false"
+            oninput="onType('origin')" onfocus="onFocus('origin')"/>
+          <div class="gps-icon" onclick="getGPS()">🎯</div>
+          <div class="pin-btn active" id="pinOriginBtn" onclick="setPinMode('origin')">📍 Pin</div>
+        </div>
+        <div class="auto-drop" id="dOrigin"></div>
+      </div>
+
+      <div style="display:flex;align-items:center;padding:0 10px 0 20px;margin:-2px 0">
+        <div style="width:1px;height:16px;background:var(--border)"></div>
+      </div>
+
+      <div class="auto-wrap" id="wrapDest">
+        <div class="search-row">
+          <div class="dot-dest"></div>
+          <input id="iDest" type="text" placeholder="Where to?"
+            autocomplete="off" spellcheck="false"
+            oninput="onType('dest')" onfocus="onFocus('dest')"/>
+          <div class="pin-btn dest-pin" id="pinDestBtn" onclick="setPinMode('dest')">📍 Pin</div>
+        </div>
+        <div class="auto-drop" id="dDest"></div>
+      </div>
+
+      <button id="goBtn" onclick="calcRoute()">Get Directions</button>
+    </div>
+  </div>
+
+  <!-- Recenter -->
+  <div id="recenterBtn" onclick="recenter()">🎯</div>
+
+  <!-- Route banner -->
+  <div id="routeBanner">
+    <div class="route-card">
+      <div class="route-summary">
+        <div><h3 id="routeDist">—</h3><span id="routeTime">—</span></div>
+        <button onclick="clearRoute()" style="background:transparent;border:1px solid var(--border);border-radius:8px;padding:6px 12px;color:var(--sub);font-size:12px;cursor:pointer">✕ Clear</button>
+      </div>
+      <div class="cur-step">
+        <div class="step-arrow-big" id="bigArrow">⬆</div>
+        <div class="step-info">
+          <h4 id="stepInst">—</h4>
+          <p id="stepDist">—</p>
+          <div class="ble-sent" id="bleSent">✓ Sent to ESP32</div>
+        </div>
+      </div>
+      <div class="step-nav">
+        <button class="snav-btn" onclick="go(-1)">◀ Prev</button>
+        <button class="snav-btn green" onclick="resend()">↻ Resend</button>
+        <button class="snav-btn" onclick="go(1)">Next ▶</button>
+      </div>
+      <button id="stepsToggle" onclick="toggleSteps()">▼ All Steps</button>
+    </div>
+  </div>
+
+  <!-- Step list -->
+  <div id="stepListPanel">
+    <div class="drag-handle"></div>
+    <div id="stepListBody"></div>
+  </div>
+
+  <div id="toast"></div>
+</div><!-- /app -->
+
+<script>
+// ════════════════════════════════════════════
+//  CONFIG — paste your ORS key here
+// ════════════════════════════════════════════
+const ORS_KEY   = 'eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjIxNzliMGQ5MGRjNzQwODQ5Y2E1NWE1MjJlZDQ2MDMxIiwiaCI6Im11cm11cjY0In0=';
+const ORS_AUTO  = 'https://api.openrouteservice.org/geocode/autocomplete';
+const ORS_ROUTE = 'https://api.openrouteservice.org/v2/directions/driving-car/geojson';
+const SVC_UUID  = '12345678-1234-1234-1234-123456789abc';
+const CHAR_UUID = 'abcdefab-cdef-abcd-efab-cdefabcdefab';
+
+// ════════════════════════════════════════════
+//  PERMISSION FLOW
+// ════════════════════════════════════════════
+let gpsGranted = false;
+
+async function requestPerms() {
+  const btn = document.getElementById('startBtn');
+  btn.innerHTML = '<span class="sp"></span> Requesting...';
+  btn.classList.remove('ready');
+
+  // 1. Check internet
+  const netOk = navigator.onLine;
+  setBadge('net', netOk ? 'granted' : 'denied', netOk ? 'Online' : 'Offline');
+
+  // 2. Request GPS
+  try {
+    await new Promise((res, rej) => {
+      navigator.geolocation.getCurrentPosition(res, rej, { timeout:10000 });
+    });
+    gpsGranted = true;
+    setBadge('gps', 'granted', 'Granted');
+  } catch(e) {
+    setBadge('gps', 'denied', 'Denied');
+    btn.innerHTML = 'Location Required — Retry';
+    btn.classList.add('ready');
+    return;
+  }
+
+  // 3. Bluetooth — just mark as optional (actual connect happens in app)
+  if (navigator.bluetooth) {
+    setBadge('ble', 'granted', 'Available');
+  } else {
+    setBadge('ble', 'denied', 'N/A');
+  }
+
+  // All good — launch app
+  btn.innerHTML = '✓ Launching...';
+  setTimeout(launchApp, 500);
+}
+
+function setBadge(id, state, label) {
+  const badge = document.getElementById(id + 'Badge');
+  const item  = document.getElementById('perm' + id.charAt(0).toUpperCase() + id.slice(1));
+  badge.textContent = label;
+  badge.className   = 'perm-badge ' + state;
+  item.className    = 'perm-item '  + state;
+}
+
+function launchApp() {
+  document.getElementById('permScreen').style.display = 'none';
+  document.getElementById('app').style.display = 'block';
+  initMap();
+  registerSW();
+}
+
+// Check internet badge on load
+window.addEventListener('load', () => {
+  setBadge('net', navigator.onLine ? 'granted' : 'denied', navigator.onLine ? 'Online' : 'Offline');
+  document.getElementById('startBtn').classList.add('ready');
+  document.getElementById('startBtn').innerHTML = 'Allow & Continue';
+});
+
+// ════════════════════════════════════════════
+//  SERVICE WORKER
+// ════════════════════════════════════════════
+function registerSW() {
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('sw.js')
+      .then(() => console.log('SW registered'))
+      .catch(e => console.log('SW failed:', e));
+  }
+}
+
+// ════════════════════════════════════════════
+//  STATE
+// ════════════════════════════════════════════
+let map, userMarker, originMarker, destMarker, routeLine, accuracyCircle;
+let ble       = null;
+let steps     = [];
+let cur       = 0;
+let oCoords   = null;
+let dCoords   = null;
+let gpsCoords = null;
+let pinMode   = null;
+let typeTimer = {};
+let results   = { origin:[], dest:[] };
+let stepsOpen = false;
+let followGPS = true;
+
+// ════════════════════════════════════════════
+//  MAP
+// ════════════════════════════════════════════
+function initMap() {
+  map = L.map('map', { zoomControl:false, attributionControl:false, tap:true })
+         .setView([20.5937, 78.9629], 5);
+
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom:19, subdomains:['a','b','c']
+  }).addTo(map);
+
+  L.control.zoom({ position:'bottomright' }).addTo(map);
+
+  map.on('dragstart', () => {
+    followGPS = false;
+    document.getElementById('recenterBtn').style.opacity = '1';
+  });
+  map.on('move',    updateCenterPin);
+  map.on('moveend', onMapMoveEnd);
+
+  startGPS();
+}
+
+// ════════════════════════════════════════════
+//  GPS TRACKING
+// ════════════════════════════════════════════
+function startGPS() {
+  navigator.geolocation.watchPosition(onGPS, null, {
+    enableHighAccuracy:true, maximumAge:2000, timeout:10000
+  });
+}
+
+function onGPS(pos) {
+  const { latitude:lat, longitude:lng, accuracy:acc } = pos.coords;
+  gpsCoords = { lat, lng };
+
+  if (!userMarker) {
+    map.setView([lat, lng], 16);
+    if (!oCoords) {
+      oCoords = { lat, lng };
+      reverseGeocode(lat, lng, n => document.getElementById('iOrigin').value = n);
+    }
+    showGoBtn();
+  }
+
+  if (userMarker) {
+    userMarker.setLatLng([lat, lng]);
+    accuracyCircle?.setLatLng([lat, lng]).setRadius(acc);
+  } else {
+    accuracyCircle = L.circle([lat,lng], { radius:acc, color:'#2196f3', fillColor:'#2196f3', fillOpacity:0.08, weight:1 }).addTo(map);
+    const icon = L.divIcon({ className:'', html:`<div style="width:18px;height:18px;background:#2196f3;border:3px solid white;border-radius:50%;box-shadow:0 2px 8px rgba(33,150,243,0.6)"></div>`, iconSize:[18,18], iconAnchor:[9,9] });
+    userMarker = L.marker([lat,lng], { icon, zIndexOffset:1000 }).addTo(map);
+  }
+
+  if (followGPS) map.setView([lat,lng], map.getZoom() < 15 ? 16 : map.getZoom());
+  if (steps.length && cur < steps.length-1) autoAdvance(lat, lng);
+}
+
+function autoAdvance(lat, lng) {
+  const wp = steps[cur]?.waypoint;
+  if (!wp) return;
+  if (distM(lat, lng, wp[0], wp[1]) < 30) { go(1); toast('📍 Next step'); }
+}
+
+function distM(a, b, c, d) {
+  const R=6371000, dLat=(c-a)*Math.PI/180, dLng=(d-b)*Math.PI/180;
+  const x=Math.sin(dLat/2)**2+Math.cos(a*Math.PI/180)*Math.cos(c*Math.PI/180)*Math.sin(dLng/2)**2;
+  return R*2*Math.atan2(Math.sqrt(x),Math.sqrt(1-x));
+}
+
+function recenter() {
+  followGPS = true;
+  document.getElementById('recenterBtn').style.opacity = '0.5';
+  if (gpsCoords) map.setView([gpsCoords.lat, gpsCoords.lng], 17, { animate:true });
+}
+
+// ════════════════════════════════════════════
+//  PIN MODE
+// ════════════════════════════════════════════
+function setPinMode(field) {
+  if (pinMode === field) {
+    pinMode = null;
+    document.getElementById('centerPin').style.display = 'none';
+    document.getElementById('pinOriginBtn').classList.toggle('active', false);
+    document.getElementById('pinDestBtn').classList.toggle('active', false);
+    return;
+  }
+  pinMode = field;
+  const pin = document.getElementById('centerPin');
+  pin.style.display = 'block';
+  pin.className = field === 'origin' ? 'origin' : 'dest';
+  document.getElementById('pinOriginBtn').classList.toggle('active', field==='origin');
+  document.getElementById('pinDestBtn').classList.toggle('active', field==='dest');
+  toast(field==='origin' ? '📍 Move map to set origin' : '📍 Move map to set destination');
+}
+
+function updateCenterPin() {
+  if (pinMode) document.getElementById('centerPin').classList.add('dragging');
+}
+
+async function onMapMoveEnd() {
+  document.getElementById('centerPin').classList.remove('dragging');
+  if (!pinMode) return;
+  const { lat, lng } = map.getCenter();
+  if (pinMode==='origin') { oCoords={lat,lng}; placeMarker('origin',lat,lng); reverseGeocode(lat,lng, n=>document.getElementById('iOrigin').value=n); }
+  else                    { dCoords={lat,lng}; placeMarker('dest',lat,lng);   reverseGeocode(lat,lng, n=>document.getElementById('iDest').value=n); }
+  showGoBtn();
+}
+
+// ════════════════════════════════════════════
+//  MARKERS
+// ════════════════════════════════════════════
+function placeMarker(type, lat, lng) {
+  const isO = type==='origin', col = isO?'#2196f3':'#ff6b35';
+  const icon = L.divIcon({ className:'', html:`<div style="width:16px;height:16px;background:${col};border:3px solid white;border-radius:${isO?'50%':'3px'};box-shadow:0 2px 10px rgba(0,0,0,0.4)"></div>`, iconSize:[16,16], iconAnchor:[8,8] });
+  if (isO) { originMarker?.remove(); originMarker=L.marker([lat,lng],{icon,zIndexOffset:900}).addTo(map); }
+  else     { destMarker?.remove();   destMarker  =L.marker([lat,lng],{icon,zIndexOffset:900}).addTo(map); }
+}
+
+async function reverseGeocode(lat, lng, cb) {
+  try {
+    const d = await (await fetch(`https://api.openrouteservice.org/geocode/reverse?api_key=${ORS_KEY}&point.lon=${lng}&point.lat=${lat}&size=1`)).json();
+    cb(d.features?.[0]?.properties?.label || `${lat.toFixed(5)}, ${lng.toFixed(5)}`);
+  } catch { cb(`${lat.toFixed(5)}, ${lng.toFixed(5)}`); }
+}
+
+// ════════════════════════════════════════════
+//  GPS BUTTON
+// ════════════════════════════════════════════
+function getGPS() {
+  toast('<span class="sp"></span> Getting location...');
+  navigator.geolocation.getCurrentPosition(pos => {
+    const {latitude:lat, longitude:lng} = pos.coords;
+    oCoords={lat,lng}; gpsCoords={lat,lng}; followGPS=true;
+    map.setView([lat,lng], 17, {animate:true});
+    placeMarker('origin', lat, lng);
+    reverseGeocode(lat, lng, n=>{ document.getElementById('iOrigin').value=n; toast('📍 Location set'); });
+    showGoBtn();
+  }, err=>toast('GPS: '+err.message), {enableHighAccuracy:true,timeout:10000});
+}
+
+// ════════════════════════════════════════════
+//  AUTOCOMPLETE
+// ════════════════════════════════════════════
+function onFocus(field) {
+  document.getElementById('wrapOrigin').style.zIndex = field==='origin'?'400':'100';
+  document.getElementById('wrapDest').style.zIndex   = field==='dest'  ?'400':'100';
+}
+
+document.addEventListener('pointerdown', e => {
+  if (!e.target.closest('#wrapOrigin')) closeDrop('origin');
+  if (!e.target.closest('#wrapDest'))   closeDrop('dest');
+});
+
+function onType(field) {
+  const v = inp(field).value.trim();
+  if (v.length<3) { closeDrop(field); return; }
+  clearTimeout(typeTimer[field]);
+  typeTimer[field] = setTimeout(()=>fetchAuto(field,v), 350);
+}
+
+async function fetchAuto(field, query) {
+  const list = drop(field);
+  list.innerHTML=`<div class="auto-item"><span class="sp"></span><span class="auto-addr">Searching...</span></div>`;
+  list.style.display='block';
+  try {
+    let url=`${ORS_AUTO}?api_key=${ORS_KEY}&text=${encodeURIComponent(query)}&boundary.country=IND&size=7`;
+    if (gpsCoords) url+=`&focus.point.lon=${gpsCoords.lng}&focus.point.lat=${gpsCoords.lat}`;
+    const res=await fetch(url); if(!res.ok) throw new Error(`HTTP ${res.status}`);
+    const feat=(await res.json()).features||[];
+    results[field]=feat;
+    if (!feat.length){list.innerHTML=`<div class="auto-item"><span class="auto-addr">No results</span></div>`;return;}
+    list.innerHTML=feat.map((f,i)=>{
+      const name=f.properties?.name||f.properties?.label||'—';
+      const addr=f.properties?.label||'';
+      return `<div class="auto-item" data-i="${i}"><div class="auto-name">${esc(name)}</div>${addr!==name?`<div class="auto-addr">${esc(addr)}</div>`:''}</div>`;
+    }).join('');
+    list.querySelectorAll('.auto-item').forEach(el=>{
+      el.addEventListener('pointerdown',e=>{e.preventDefault();e.stopPropagation();pick(field,parseInt(el.dataset.i));});
+    });
+  } catch(e){list.innerHTML=`<div class="auto-item"><span class="auto-addr" style="color:var(--red)">Error: ${e.message}</span></div>`;}
+}
+
+function pick(field, idx) {
+  const feat=results[field]?.[idx]; if(!feat) return;
+  const c=feat.geometry?.coordinates; if(!c){toast('No coords');return;}
+  const lng=parseFloat(c[0]),lat=parseFloat(c[1]);
+  if(isNaN(lat)||isNaN(lng)){toast('Invalid coords');return;}
+  const name=feat.properties?.label||feat.properties?.name||'';
+  inp(field).value=name; closeDrop(field); inp(field).blur();
+  if(field==='origin'){oCoords={lat,lng};gpsCoords={lat,lng};}else dCoords={lat,lng};
+  placeMarker(field,lat,lng);
+  map.setView([lat,lng],map.getZoom()<14?15:map.getZoom(),{animate:true});
+  showGoBtn(); toast(`📍 ${field==='origin'?'Origin':'Destination'} set`);
+}
+
+function showGoBtn(){document.getElementById('goBtn').style.display=(oCoords&&dCoords)?'block':'none';}
+
+// ════════════════════════════════════════════
+//  ROUTE
+// ════════════════════════════════════════════
+async function calcRoute() {
+  if(!oCoords||!dCoords){toast('Set both origin and destination');return;}
+  const btn=document.getElementById('goBtn');
+  btn.disabled=true; btn.innerHTML='<span class="sp"></span> Calculating...';
+  try {
+    const body={
+      coordinates:[[oCoords.lng,oCoords.lat],[dCoords.lng,dCoords.lat]],
+      instructions:true, instructions_format:'text', language:'en', units:'m'
+    };
+    const res=await fetch(ORS_ROUTE,{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':ORS_KEY},
+      body:JSON.stringify(body)
+    });
+    if(!res.ok){const e=await res.json().catch(()=>({}));throw new Error(e.error?.message||`HTTP ${res.status}`);}
+    const data=await res.json();
+    const feature=data.features?.[0]; if(!feature) throw new Error('No route found');
+    const seg=feature.properties?.segments?.[0]; if(!seg?.steps?.length) throw new Error('No steps found');
+    const rawC=feature.geometry?.coordinates; if(!rawC?.length) throw new Error('No geometry');
+    const coords=rawC.map(c=>[c[1],c[0]]);
+
+    routeLine?.remove();
+    routeLine=L.polyline(coords,{color:'#2196f3',weight:5,opacity:0.85,lineJoin:'round',lineCap:'round'}).addTo(map);
+    map.fitBounds(routeLine.getBounds(),{padding:[80,80]});
+    followGPS=false;
+
+    steps=seg.steps.map(s=>({
+      inst:s.instruction||'Continue', type:s.type??0,
+      dist:fmtD(s.distance), dur:fmtT(s.duration),
+      waypoint:s.way_points?.length?coords[s.way_points[0]]:null
+    }));
+
+    const summary=feature.properties?.summary;
+    cur=0; renderStepList(); showCurStep(); sendStep();
+    document.getElementById('routeBanner').style.display='block';
+    document.getElementById('searchPanel').style.borderRadius='18px 18px 0 0';
+    document.getElementById('routeDist').textContent=fmtD(summary?.distance||0);
+    document.getElementById('routeTime').textContent='~'+fmtT(summary?.duration||0);
+    pinMode=null; document.getElementById('centerPin').style.display='none';
+    btn.disabled=false; btn.innerHTML='Recalculate';
+  } catch(e){btn.disabled=false;btn.innerHTML='Get Directions';toast('Route error: '+e.message);}
+}
+
+function clearRoute(){
+  routeLine?.remove();routeLine=null;steps=[];cur=0;
+  document.getElementById('routeBanner').style.display='none';
+  document.getElementById('stepListPanel').style.display='none';
+  document.getElementById('searchPanel').style.borderRadius='18px';
+  stepsOpen=false;
+}
+
+// ════════════════════════════════════════════
+//  STEPS
+// ════════════════════════════════════════════
+const ARROWS=['↰','↱','↰','↱','↖','↗','⬆','🔄','🔄','↩','📍','⬆','↖','↗'];
+const CODES =['TURN_LEFT','TURN_RIGHT','TURN_LEFT','TURN_RIGHT','SLIGHT_LEFT','SLIGHT_RIGHT','STRAIGHT','TURN_RIGHT','TURN_RIGHT','U_TURN','ARRIVE','STRAIGHT','SLIGHT_LEFT','SLIGHT_RIGHT'];
+const arrowFor=t=>ARROWS[t]??'⬆';
+const codeFor =t=>CODES[t]??'STRAIGHT';
+
+function showCurStep(){
+  if(!steps.length)return;
+  const s=steps[cur];
+  document.getElementById('bigArrow').textContent=arrowFor(s.type);
+  document.getElementById('stepInst').textContent=s.inst;
+  document.getElementById('stepDist').textContent=s.dist+(s.dur?'  ~'+s.dur:'');
+  document.body.classList.toggle('arrived',s.type===10);
+  if(s.waypoint&&!followGPS) map.panTo(s.waypoint,{animate:true,duration:0.5});
+}
+
+function renderStepList(){
+  document.getElementById('stepListBody').innerHTML=steps.map((s,i)=>
+    `<div class="sl-item ${i===cur?'active':''}" onclick="jump(${i})">
+      <span class="sl-num">${String(i+1).padStart(2,'0')}</span>
+      <span class="sl-icon">${arrowFor(s.type)}</span>
+      <span class="sl-inst">${s.inst}</span>
+      <span class="sl-dist">${s.dist}</span>
+    </div>`).join('');
+}
+
+function toggleSteps(){
+  stepsOpen=!stepsOpen;
+  document.getElementById('stepListPanel').style.display=stepsOpen?'block':'none';
+  document.getElementById('stepsToggle').textContent=stepsOpen?'▲ Hide Steps':'▼ All Steps';
+}
+
+function jump(i){cur=i;showCurStep();renderStepList();sendStep();toggleSteps();}
+function go(dir){const n=cur+dir;if(n>=0&&n<steps.length){cur=n;showCurStep();renderStepList();sendStep();}}
+function resend(){sendStep();}
+
+// ════════════════════════════════════════════
+//  BLE
+// ════════════════════════════════════════════
+async function connectBLE(){
+  if(ble)return;
+  try{
+    toast('Scanning for ESP32...');
+    const dev=await navigator.bluetooth.requestDevice({filters:[{name:'ESP32-Navigator'}],optionalServices:[SVC_UUID]});
+    toast('<span class="sp"></span> Connecting...');
+    const srv=await dev.gatt.connect();
+    ble=await (await srv.getPrimaryService(SVC_UUID)).getCharacteristic(CHAR_UUID);
+    document.getElementById('bleDot').classList.add('on');
+    document.getElementById('blePill').classList.add('on');
+    document.getElementById('bleLabel').textContent='ESP32 ✓';
+    toast('✓ ESP32 Connected');
+    dev.addEventListener('gattserverdisconnected',()=>{
+      ble=null;
+      document.getElementById('bleDot').classList.remove('on');
+      document.getElementById('blePill').classList.remove('on');
+      document.getElementById('bleLabel').textContent='Connect BLE';
+      toast('BLE disconnected');
+    });
+  }catch(e){toast('BLE: '+e.message);}
+}
+
+async function sendStep(){
+  const sent=document.getElementById('bleSent');
+  if(!ble||!steps.length){sent.style.display='none';return;}
+  const s=steps[cur];
+  const msg=codeFor(s.type)+'|'+(s.inst+' ('+s.dist+')').substring(0,42);
+  try{
+    await ble.writeValue(new TextEncoder().encode(msg));
+    sent.style.display='block';
+    setTimeout(()=>sent.style.display='none',2000);
+  }catch(e){toast('BLE error: '+e.message);}
+}
+
+// ════════════════════════════════════════════
+//  HELPERS
+// ════════════════════════════════════════════
+let toastTimer;
+function toast(html,dur=2500){
+  const el=document.getElementById('toast');
+  el.innerHTML=html;el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer=setTimeout(()=>el.classList.remove('show'),dur);
+}
+function inp(f){return document.getElementById(f==='origin'?'iOrigin':'iDest');}
+function drop(f){return document.getElementById(f==='origin'?'dOrigin':'dDest');}
+function closeDrop(f){drop(f).style.display='none';}
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function fmtD(m){if(!m)return'0 m';return m>=1000?(m/1000).toFixed(1)+' km':Math.round(m)+' m';}
+function fmtT(s){if(!s)return'—';if(s<60)return Math.round(s)+'s';if(s<3600)return Math.round(s/60)+' min';return Math.floor(s/3600)+'h '+Math.round((s%3600)/60)+'m';}
+</script>
+</body>
+</html>
