@@ -2,7 +2,7 @@
   "name": "EspNav",
   "short_name": "EspNav",
   "description": "ESP32 BLE Navigator with turn-by-turn directions",
-  "start_url": "/index.html",
+  "start_url": "./",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#0d0d0d",
